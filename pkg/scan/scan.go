@@ -21,7 +21,6 @@ import (
 	bicepParser "github.com/Checkmarx/kics/pkg/parser/bicep"
 	buildahParser "github.com/Checkmarx/kics/pkg/parser/buildah"
 	protoParser "github.com/Checkmarx/kics/pkg/parser/grpc"
-	jsonParser "github.com/Checkmarx/kics/pkg/parser/json"
 	terraformParser "github.com/Checkmarx/kics/pkg/parser/terraform"
 	yamlParser "github.com/Checkmarx/kics/pkg/parser/yaml"
 	"github.com/Checkmarx/kics/pkg/resolver"
@@ -81,8 +80,6 @@ func (c *Client) initScan(ctx context.Context) (*executeScanParameters, error) {
 		true,
 		c.ScanParams.ParallelScanFlag,
 		c.ScanParams.KicsComputeNewSimID,
-		c.ScanParams.QueryDir,
-		c.ScanParams.LibraryFile,
 	)
 	if err != nil {
 		return nil, err
@@ -259,9 +256,9 @@ func (c *Client) createService(
 	}
 
 	combinedParser, err := parser.NewBuilder().
-		Add(&jsonParser.Parser{}).
+		// Add(&jsonParser.Parser{}).
 		Add(&yamlParser.Parser{}).
-		Add(terraformParser.NewDefaultWithVarsPath(c.ScanParams.TerraformVarsPath)).
+		Add(terraformParser.NewDefaultWithParams(c.ScanParams.TerraformVarsPath, c.ScanParams.SCIInfo)).
 		Add(&bicepParser.Parser{}).
 		Add(&protoParser.Parser{}).
 		Add(&buildahParser.Parser{}).

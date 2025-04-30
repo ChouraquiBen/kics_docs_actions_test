@@ -8,7 +8,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 
@@ -63,7 +62,7 @@ type QueryLoader struct {
 
 // VulnerabilityBuilder represents a function that will build a vulnerability
 type VulnerabilityBuilder func(ctx *QueryContext, tracker Tracker, v interface{},
-	detector *detector.DetectLine, useOldSeverities bool, kicsComputeNewSimID bool) (*model.Vulnerability, error)
+	detector *detector.DetectLine, useOldSeverities bool, kicsComputeNewSimID bool, queryDuration time.Duration) (*model.Vulnerability, error)
 
 // PreparedQuery includes the opaQuery and its metadata
 type PreparedQuery struct {
@@ -129,41 +128,33 @@ func NewInspector(
 	needsLog bool,
 	numWorkers int,
 	kicsComputeNewSimID bool,
-	queryDir embed.FS,
-	libraryFile string,
 ) (*Inspector, error) {
 	log.Debug().Msg("engine.NewInspector()")
 
 	metrics.Metric.Start("get_queries")
-	queries, err := queriesSource.GetQueries(queryParameters, queryDir)
+	queries, err := queriesSource.GetQueries(queryParameters)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get queries")
 	}
 
 	log.Info().Msgf("Queries loaded: %d", len(queries))
 
-	commonLibrary, err := queriesSource.GetQueryLibrary(queryDir, "common")
+	commonLibrary, err := queriesSource.GetQueryLibrary("common")
 	if err != nil {
-		// sentryReport.ReportSentry(&sentryReport.Report{
-		// 	Message:  fmt.Sprintf("Inspector failed to get library for %s platform", "common"),
-		// 	Err:      err,
-		// 	Location: "func NewInspector()",
-		// 	Platform: "common",
-		// }, true)
 		return nil, errors.Wrap(err, "failed to get library")
 	}
-	// platformLibraries := getPlatformLibraries(queriesSource, queries, queryDir)
+	platformLibraries := getPlatformLibraries(queriesSource, queries)
 
-	regoLibrary := source.RegoLibraries{
-		LibraryCode:      string(libraryFile),
-		LibraryInputData: "",
-	}
+	// regoLibrary := source.RegoLibraries{
+	// 	LibraryCode:      string(libraryFile),
+	// 	LibraryInputData: "",
+	// }
 
-	platformLibraries := map[string]source.RegoLibraries{
-		"terraform": regoLibrary,
-	}
+	// platformLibraries := map[string]source.RegoLibraries{
+	// 	"terraform": regoLibrary,
+	// }
 
-	log.Info().Msgf("Platform libraries loaded: %d, %d", len(platformLibraries), len(libraryFile))
+	// log.Info().Msgf("Platform libraries loaded: %d, %d", len(platformLibraries), len(libraryFile))
 
 	queryLoader := prepareQueries(queries, commonLibrary, platformLibraries, tracker)
 
@@ -200,21 +191,16 @@ func NewInspector(
 	}, nil
 }
 
-func getPlatformLibraries(queriesSource source.QueriesSource, queries []model.QueryMetadata, baseDir embed.FS) map[string]source.RegoLibraries {
+func getPlatformLibraries(queriesSource source.QueriesSource, queries []model.QueryMetadata) map[string]source.RegoLibraries {
 	supportedPlatforms := make(map[string]string)
 	for _, query := range queries {
 		supportedPlatforms[query.Platform] = ""
 	}
 	platformLibraries := make(map[string]source.RegoLibraries)
 	for platform := range supportedPlatforms {
-		platformLibrary, errLoadingPlatformLib := queriesSource.GetQueryLibrary(baseDir, platform)
+		platformLibrary, errLoadingPlatformLib := queriesSource.GetQueryLibrary(platform)
 		if errLoadingPlatformLib != nil {
-			// sentryReport.ReportSentry(&sentryReport.Report{
-			// 	Message:  fmt.Sprintf("Inspector failed to get library for %s platform", platform),
-			// 	Err:      errLoadingPlatformLib,
-			// 	Location: "func getPlatformLibraries()",
-			// 	Platform: platform,
-			// }, true)
+			log.Err(errLoadingPlatformLib).Msgf("error loading platform library: %s", errLoadingPlatformLib)
 			continue
 		}
 		platformLibraries[platform] = platformLibrary
@@ -252,9 +238,6 @@ func (c *Inspector) performInspection(ctx context.Context, scanID string, files 
 			continue
 		}
 
-		log.Debug().Msgf("Starting to run query %s", queries[job.queryID].Query)
-		queryStartTime := time.Now()
-
 		query := &PreparedQuery{
 			OpaQuery: *queryOpa,
 			Metadata: queries[job.queryID],
@@ -271,7 +254,6 @@ func (c *Inspector) performInspection(ctx context.Context, scanID string, files 
 
 		vuls, err := c.doRun(queryContext)
 		if err == nil {
-			log.Debug().Msgf("Finished to run query %s after %v", queries[job.queryID].Query, time.Since(queryStartTime))
 			c.tracker.TrackQueryExecution(query.Metadata.Aggregation)
 		}
 		results <- QueryResult{vulnerabilities: vuls, err: err, queryID: job.queryID}
@@ -397,6 +379,7 @@ func (c *Inspector) GetFailedQueries() map[string]error {
 }
 
 func (c *Inspector) doRun(ctx *QueryContext) (vulns []model.Vulnerability, err error) {
+	queryStart := time.Now()
 	timeoutCtx, cancel := context.WithTimeout(ctx.Ctx, c.queryExecTimeout)
 	defer cancel()
 	defer func() {
@@ -434,21 +417,18 @@ func (c *Inspector) doRun(ctx *QueryContext) (vulns []model.Vulnerability, err e
 			ctx.Query.Metadata.Query: module,
 		})
 	}
-
-	log.Trace().
-		Str("scanID", ctx.scanID).
-		Msgf("Inspector executed with result %+v, query=%s", results, ctx.Query.Metadata.Query)
-
+	queryDuration := time.Since(queryStart)
 	timeoutCtxToDecode, cancelDecode := context.WithTimeout(ctx.Ctx, c.queryExecTimeout)
 	defer cancelDecode()
-	return c.DecodeQueryResults(ctx, timeoutCtxToDecode, results)
+	return c.DecodeQueryResults(ctx, timeoutCtxToDecode, results, queryDuration)
 }
 
 // DecodeQueryResults decodes the results into []model.Vulnerability
 func (c *Inspector) DecodeQueryResults(
 	ctx *QueryContext,
 	ctxTimeout context.Context,
-	results rego.ResultSet) ([]model.Vulnerability, error) {
+	results rego.ResultSet,
+	queryDuration time.Duration) ([]model.Vulnerability, error) {
 	if len(results) == 0 {
 		return nil, ErrNoResult
 	}
@@ -474,7 +454,7 @@ func (c *Inspector) DecodeQueryResults(
 			timeOut = true
 			break
 		default:
-			vulnerability, aux := getVulnerabilitiesFromQuery(ctx, c, queryResultItem)
+			vulnerability, aux := getVulnerabilitiesFromQuery(ctx, c, queryResultItem, queryDuration)
 			if aux {
 				failedDetectLine = aux
 			}
@@ -499,8 +479,8 @@ func (c *Inspector) DecodeQueryResults(
 	return vulnerabilities, nil
 }
 
-func getVulnerabilitiesFromQuery(ctx *QueryContext, c *Inspector, queryResultItem interface{}) (*model.Vulnerability, bool) {
-	vulnerability, err := c.vb(ctx, c.tracker, queryResultItem, c.detector, c.useOldSeverities, c.kicsComputeNewSimID)
+func getVulnerabilitiesFromQuery(ctx *QueryContext, c *Inspector, queryResultItem interface{}, queryDuration time.Duration) (*model.Vulnerability, bool) {
+	vulnerability, err := c.vb(ctx, c.tracker, queryResultItem, c.detector, c.useOldSeverities, c.kicsComputeNewSimID, queryDuration)
 	if err != nil && err.Error() == ErrNoResult.Error() {
 		// Ignoring bad results
 		return nil, false

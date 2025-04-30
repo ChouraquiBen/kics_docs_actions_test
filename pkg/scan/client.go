@@ -7,7 +7,6 @@ package scan
 
 import (
 	"context"
-	"embed"
 	"time"
 
 	"github.com/Checkmarx/kics/internal/storage"
@@ -57,9 +56,8 @@ type Parameters struct {
 	UseOldSeverities            bool
 	MaxResolverDepth            int
 	KicsComputeNewSimID         bool
+	PreAnalysisExcludePaths     []string
 	SCIInfo                     model.SCIInfo
-	QueryDir                    embed.FS
-	LibraryFile                 string
 }
 
 // Client represents a scan client
@@ -73,25 +71,33 @@ type Client struct {
 	ProBarBuilder     *progress.PbBuilder
 }
 
-func GetDefaultParameters() *Parameters {
+func GetDefaultParameters(rootPath string) *Parameters {
+
+	// check for config file and load in relevant params if present
+	configParams, err := initializeConfig(rootPath)
+	if err != nil {
+		log.Err(err).Msgf("failed to initialize config %v", err)
+		return nil
+	}
+
 	return &Parameters{
 		CloudProvider:               []string{""},
 		DisableFullDesc:             false,
-		ExcludeCategories:           []string{},
-		ExcludeQueries:              []string{},
-		ExcludeResults:              []string{},
-		ExcludeSeverities:           []string{},
-		ExcludePaths:                []string{},
+		ExcludeCategories:           configParams.ExcludeCategories,
+		ExcludeQueries:              configParams.ExcludeQueries,
+		ExcludeResults:              configParams.ExcludeResults,
+		ExcludeSeverities:           configParams.ExcludeSeverities,
+		ExcludePaths:                configParams.ExcludePaths,
 		ExperimentalQueries:         false,
 		IncludeQueries:              []string{},
 		InputData:                   "",
-		OutputName:                  "kics-result",
+		OutputName:                  "kics-result.sarif",
 		PayloadPath:                 "",
 		PreviewLines:                3,
 		QueriesPath:                 []string{"./assets/queries"},
 		LibrariesPath:               "./assets/libraries",
 		ReportFormats:               []string{"sarif"},
-		Platform:                    []string{""},
+		Platform:                    []string{"Terraform"},
 		TerraformVarsPath:           "",
 		QueryExecTimeout:            60,
 		LineInfoPayload:             false,
@@ -136,22 +142,22 @@ func NewClient(params *Parameters, proBarBuilder *progress.PbBuilder, customPrin
 }
 
 // PerformScan executes executeScan and postScan
-func (c *Client) PerformScan(ctx context.Context) error {
+func (c *Client) PerformScan(ctx context.Context) (ScanMetadata, error) {
 	c.ScanStartTime = time.Now()
 
 	scanResults, err := c.executeScan(ctx)
 
 	if err != nil {
 		log.Err(err).Msgf("failed to execute scan %v", err)
-		return err
+		return ScanMetadata{}, err
 	}
 
-	postScanError := c.postScan(scanResults)
+	scanMetadata, postScanError := c.postScan(scanResults)
 
 	if postScanError != nil {
 		log.Err(postScanError)
-		return postScanError
+		return ScanMetadata{}, postScanError
 	}
 
-	return nil
+	return scanMetadata, nil
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	consoleHelpers "github.com/Checkmarx/kics/internal/console/helpers"
-	"github.com/Checkmarx/kics/pkg/descriptions"
 	"github.com/Checkmarx/kics/pkg/engine/provider"
 	"github.com/Checkmarx/kics/pkg/model"
 	consolePrinter "github.com/Checkmarx/kics/pkg/printer"
@@ -33,23 +32,31 @@ func (c *Client) getSummary(results []model.Vulnerability, end time.Time, pathPa
 		TotalQueries:           c.Tracker.LoadedQueries,
 		FailedToExecuteQueries: c.Tracker.ExecutingQueries - c.Tracker.ExecutedQueries,
 		FailedSimilarityID:     c.Tracker.FailedSimilarityID,
+		FoundResources:         c.Tracker.FoundResources,
 	}
 
-	summary := model.CreateSummary(counters, results, c.ScanParams.ScanID, pathParameters.PathExtractionMap, c.Tracker.Version)
+	summary := model.CreateSummary(
+		counters,
+		results,
+		c.ScanParams.ScanID,
+		pathParameters.PathExtractionMap,
+		c.Tracker.Version,
+		c.ScanParams.OutputPath,
+	)
 	summary.Times = model.Times{
 		Start: c.ScanStartTime,
 		End:   end,
 	}
 
-	if c.ScanParams.DisableFullDesc {
-		log.Warn().Msg("Skipping descriptions because provided disable flag is set")
-	} else {
-		err := descriptions.RequestAndOverrideDescriptions(&summary)
-		if err != nil {
-			log.Warn().Msgf("Unable to get descriptions: %s", err)
-			log.Warn().Msgf("Using default descriptions")
-		}
-	}
+	// if c.ScanParams.DisableFullDesc {
+	// 	log.Warn().Msg("Skipping descriptions because provided disable flag is set")
+	// } else {
+	// 	err := descriptions.RequestAndOverrideDescriptions(&summary)
+	// 	if err != nil {
+	// 		log.Warn().Msgf("Unable to get descriptions: %s", err)
+	// 		log.Warn().Msgf("Using default descriptions")
+	// 	}
+	// }
 
 	return summary
 }
@@ -63,7 +70,7 @@ func (c *Client) resolveOutputs(
 	log.Debug().Msg("console.resolveOutputs()")
 
 	usingCustomQueries := usingCustomQueries(c.ScanParams.QueriesPath)
-	if err := consolePrinter.PrintResult(summary, printer, usingCustomQueries); err != nil {
+	if err := consolePrinter.PrintResult(summary, printer, usingCustomQueries, c.ScanParams.SCIInfo); err != nil {
 		return err
 	}
 	if c.ScanParams.PayloadPath != "" {
@@ -95,13 +102,15 @@ func printOutput(outputPath, filename string, body interface{}, formats []string
 	}
 
 	log.Debug().Msgf("Output formats provided [%v]", strings.Join(formats, ","))
+	log.Debug().Msgf("SCIInfo: %v", sciInfo)
 	err := consoleHelpers.GenerateReport(outputPath, filename, body, formats, proBarBuilder, sciInfo)
 
 	return err
 }
 
 // postScan is responsible for the output results
-func (c *Client) postScan(scanResults *Results) error {
+func (c *Client) postScan(scanResults *Results) (ScanMetadata, error) {
+	metadata := ScanMetadata{}
 	if scanResults == nil {
 		log.Info().Msg("No files were scanned")
 		scanResults = &Results{
@@ -132,22 +141,113 @@ func (c *Client) postScan(scanResults *Results) error {
 		c.Printer,
 		*c.ProBarBuilder); err != nil {
 		log.Err(err).Msgf("failed to resolve outputs %v", err)
-		return err
+		return metadata, err
 	}
 
-	deleteExtractionFolder(scanResults.ExtractedPaths.ExtractionMap)
-
 	logger := consolePrinter.NewLogger(nil)
-	consolePrinter.PrintScanDuration(&logger, time.Since(c.ScanStartTime))
+	endTime := time.Now()
+	scanDuration := endTime.Sub(c.ScanStartTime)
+	consolePrinter.PrintScanDuration(&logger, scanDuration)
 
-	// printVersionCheck(c.Printer, &summary)
-
-	// contributionAppeal(c.Printer, c.ScanParams.QueriesPath)
+	log.Info().Int64(
+		"org", c.ScanParams.SCIInfo.OrgId,
+	).Str(
+		"branch", c.ScanParams.SCIInfo.RepositoryCommitInfo.Branch,
+	).Str(
+		"sha", c.ScanParams.SCIInfo.RepositoryCommitInfo.CommitSHA,
+	).Str(
+		"repository", c.ScanParams.SCIInfo.RepositoryCommitInfo.RepositoryUrl,
+	).Str(
+		"exclusion_source", "config_file",
+	).Int(
+		"excluded_paths", len(c.ScanParams.PreAnalysisExcludePaths),
+	).Int(
+		"excluded_categories", len(c.ScanParams.ExcludeCategories),
+	).Int(
+		"excluded_severities", len(c.ScanParams.ExcludeSeverities),
+	).Int(
+		"excluded_queries", len(c.ScanParams.ExcludeQueries),
+	).Int(
+		"excluded_results", len(c.ScanParams.ExcludeResults),
+	).Msg("Exclusions Info")
 
 	exitCode := consoleHelpers.ResultsExitCode(&summary)
 	if consoleHelpers.ShowError("results") && exitCode != 0 {
 		os.Exit(exitCode)
 	}
 
-	return nil
+	// generate metadata payload
+	metadata = c.generateMetadata(scanResults, c.ScanStartTime, endTime)
+
+	return metadata, nil
+}
+
+func (c *Client) generateMetadata(scanResults *Results, startTime time.Time, endTime time.Time) ScanMetadata {
+	stats := c.generateStats(scanResults, endTime.Sub(startTime))
+	ruleStats := c.generateRuleStats(scanResults)
+
+	metadata := ScanMetadata{
+		StartTime:      startTime,
+		EndTime:        endTime,
+		CoresAvailable: int(consoleHelpers.GetNumCPU()),
+		DiffAware:      c.ScanParams.SCIInfo.DiffAware.Enabled,
+		Stats:          stats,
+		RuleStats:      ruleStats,
+	}
+
+	return metadata
+}
+
+func (c *Client) generateStats(scanResults *Results, scanDuration time.Duration) ScanStats {
+	// iterate through scanResults and create a map of severity to count
+	violationBreakdowns := make(map[string][]string)
+	severitySet := make(map[model.Severity]bool)
+	for _, sev := range model.AllSeverities {
+		severitySet[sev] = true
+	}
+	for _, vuln := range scanResults.Results {
+		if _, exists := severitySet[vuln.Severity]; exists {
+			temp := []string{}
+			if _, exists := violationBreakdowns[string(vuln.Severity)]; exists {
+				temp = violationBreakdowns[string(vuln.Severity)]
+			}
+			violationBreakdowns[string(vuln.Severity)] = append(temp, vuln.QueryID)
+		}
+	}
+
+	return ScanStats{
+		Violations:          len(scanResults.Results),
+		Files:               c.Tracker.FoundFiles,
+		Rules:               c.Tracker.ExecutedQueries,
+		Duration:            scanDuration,
+		ViolationBreakdowns: violationBreakdowns,
+		ResourcesScanned:    c.Tracker.FoundResources,
+	}
+}
+
+func (c *Client) generateRuleStats(scanResults *Results) RuleStats {
+	failedQueries := make([]string, 0, len(scanResults.FailedQueries))
+	for _, q := range failedQueries {
+		failedQueries = append(failedQueries, q)
+	}
+	return RuleStats{
+		TimedOut:          failedQueries,
+		MostExpensiveRule: getLongestRunningQuery(scanResults.Results),
+		SlowestRule:       getLongestRunningQuery(scanResults.Results),
+	}
+}
+
+func getLongestRunningQuery(vulns []model.Vulnerability) RuleTiming {
+	longestQuery := ""
+	longestQueryTime := time.Duration(0)
+	for _, vuln := range vulns {
+		if vuln.QueryDuration > longestQueryTime {
+			longestQueryTime = vuln.QueryDuration
+			longestQuery = vuln.QueryName
+		}
+	}
+	return RuleTiming{
+		Name: longestQuery,
+		Time: longestQueryTime,
+	}
 }

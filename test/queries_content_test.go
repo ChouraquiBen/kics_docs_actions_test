@@ -2,7 +2,6 @@ package test
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Checkmarx/kics/internal/constants"
 	"github.com/Checkmarx/kics/internal/tracker"
@@ -181,7 +181,7 @@ func testQueryHasGoodReturnParams(t *testing.T, entry queryEntry) { //nolint
 	queriesSource := mock.NewMockQueriesSource(ctrl)
 	queriesSource.EXPECT().GetQueries(getQueryFilter()).
 		DoAndReturn(func(interface{}) ([]model.QueryMetadata, error) {
-			q, err := source.ReadQuery(embed.FS{}, entry.dir)
+			q, err := source.ReadQuery(entry.dir)
 
 			return []model.QueryMetadata{q}, err
 		})
@@ -201,7 +201,7 @@ func testQueryHasGoodReturnParams(t *testing.T, entry queryEntry) { //nolint
 	inspector, err := engine.NewInspector(
 		ctx,
 		queriesSource,
-		func(ctx *engine.QueryContext, trk engine.Tracker, v interface{}, detector *detector.DetectLine, useOldSeverities bool, kicsComputeNewSimID bool) (*model.Vulnerability, error) {
+		func(ctx *engine.QueryContext, trk engine.Tracker, v interface{}, detector *detector.DetectLine, useOldSeverities bool, kicsComputeNewSimID bool, queryDuration time.Duration) (*model.Vulnerability, error) {
 			m, ok := v.(map[string]interface{})
 			require.True(t, ok)
 
@@ -270,8 +270,6 @@ func testQueryHasGoodReturnParams(t *testing.T, entry queryEntry) { //nolint
 		true,
 		1,
 		false,
-		embed.FS{},
-		"",
 	)
 	require.Nil(t, err)
 	require.NotNil(t, inspector)

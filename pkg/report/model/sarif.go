@@ -13,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Checkmarx/kics/internal/constants"
 	"github.com/Checkmarx/kics/pkg/model"
+	remediationsHelper "github.com/Checkmarx/kics/pkg/report/remediations"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
@@ -140,41 +142,29 @@ type sarifTool struct {
 	Driver sarifDriver `json:"driver"`
 }
 
-type sarifResourceLocation struct {
-	Line int `json:"line"`
-	Col  int `json:"col"`
-}
-
-type sarifRegion struct {
-	StartLine   int `json:"startLine"`
-	EndLine     int `json:"endLine"`
-	StartColumn int `json:"startColumn"`
-	EndColumn   int `json:"endColumn"`
-	// StartResource sarifResourceLocation `json:"startResource"`
-	// EndResource   sarifResourceLocation `json:"endResource"`
-}
-
 type sarifArtifactLocation struct {
 	ArtifactURI string `json:"uri"`
 }
 
 type sarifPhysicalLocation struct {
 	ArtifactLocation sarifArtifactLocation `json:"artifactLocation"`
-	Region           sarifRegion           `json:"region"`
+	Region           model.SarifRegion     `json:"region"`
 }
 
-type sarifLocation struct {
+type SarifLocation struct {
 	PhysicalLocation sarifPhysicalLocation `json:"physicalLocation"`
 }
 
 type sarifResult struct {
 	ResultRuleID        string                   `json:"ruleId"`
 	ResultRuleIndex     int                      `json:"ruleIndex"`
-	ResultKind          string                   `json:"kind"`
+	ResultKind          string                   `json:"kind,omitempty"`
 	ResultMessage       sarifMessage             `json:"message"`
-	ResultLocations     []sarifLocation          `json:"locations"`
+	ResultLocations     []SarifLocation          `json:"locations"`
 	PartialFingerprints SarifPartialFingerprints `json:"partialFingerprints,omitempty"`
 	ResultLevel         string                   `json:"level"`
+	ResultProperties    sarifProperties          `json:"properties,omitempty"`
+	ResultFixes         []model.SarifFix         `json:"fixes,omitempty"`
 }
 
 type SarifPartialFingerprints struct {
@@ -224,10 +214,12 @@ type SarifRun struct {
 
 // SarifReport represents a usable sarif report reference
 type SarifReport interface {
-	BuildSarifIssue(issue *model.QueryResult) string
+	BuildSarifIssue(issue *model.QueryResult, sciInfo model.SCIInfo) string
 	RebuildTaxonomies(cwes []string, guids map[string]string)
 	GetGUIDFromRelationships(idx int, cweID string) string
 	AddTags(summary *model.Summary, diffAware *model.DiffAware) error
+	ResolveFilepaths(basePath string) error
+	SetToolVersionType(runType string)
 }
 
 type sarifReport struct {
@@ -249,7 +241,7 @@ const (
 func initSarifTool() sarifTool {
 	return sarifTool{
 		Driver: sarifDriver{
-			ToolName:     "Datadog IaC Scanning",
+			ToolName:     "Datadog IaC Scanning", // DO NOT CHANGE THIS VALUE. This value is needed for downstream mappings that rely on this value being "Datadog IaC Scanning"
 			ToolVersion:  constants.Version,
 			ToolFullName: constants.Fullname,
 			ToolURI:      constants.URL,
@@ -539,34 +531,27 @@ func (sr *sarifReport) buildSarifRule(queryMetadata *ruleMetadata, cisMetadata r
 			helpURI = queryMetadata.queryURI
 		}
 
-		// target := sr.buildSarifCategory(queryMetadata.queryCategory)
-		// cwe := sr.buildCweCategory(queryMetadata.queryCwe)
+		tags := []string{ruleTypeProperty}
+		cwe := queryMetadata.queryCwe
+		if cwe != "" {
+			cweTag := GetCWETag(cwe)
+			tags = append(tags, cweTag)
+		}
 
 		categoryTag := GetCategoryTag(queryMetadata.queryCategory)
-
-		// var relationships []sarifRelationship
-
-		// if cwe.ReferenceID != "" {
-		// 	relationships = []sarifRelationship{
-		// 		{Relationship: target},
-		// 		{Relationship: cwe},
-		// 	}
-		// } else {
-		// 	relationships = []sarifRelationship{
-		// 		{Relationship: target},
-		// 	}
-		// }
+		kicsRuleIDTag := GetKICSRuleIDTag(queryMetadata.queryID)
+		tags = append(tags, categoryTag, kicsRuleIDTag)
 
 		rule := sarifRule{
-			RuleID:               queryMetadata.queryID,
+			RuleID:               queryMetadata.queryName,
 			RuleName:             queryMetadata.queryName,
 			RuleShortDescription: sarifMessage{Text: queryMetadata.queryName},
-			RuleFullDescription:  sarifMessage{Text: queryMetadata.queryDescription},
+			RuleFullDescription:  sarifMessage{Text: fmt.Sprintf("[%s] %s", queryMetadata.queryID, queryMetadata.queryDescription)},
 			DefaultConfiguration: sarifConfiguration{Level: severityLevelEquivalence[queryMetadata.severity]},
 			// Relationships:        relationships,
 			HelpURI: helpURI,
 			RuleProperties: sarifProperties{
-				"tags": []string{ruleTypeProperty, categoryTag},
+				"tags": tags,
 			},
 		}
 		if cisMetadata.id != "" {
@@ -614,7 +599,7 @@ func (sr *sarifReport) RebuildTaxonomies(cwes []string, guids map[string]string)
 }
 
 // BuildSarifIssue creates a new entries in Results (one for each file) and new entry in Rules and Taxonomy if necessary
-func (sr *sarifReport) BuildSarifIssue(issue *model.QueryResult) string {
+func (sr *sarifReport) BuildSarifIssue(issue *model.QueryResult, sciInfo model.SCIInfo) string {
 	if len(issue.Files) > 0 {
 		metadata := ruleMetadata{
 			queryID:          issue.QueryID,
@@ -632,61 +617,126 @@ func (sr *sarifReport) BuildSarifIssue(issue *model.QueryResult) string {
 		}
 		ruleIndex := sr.buildSarifRule(&metadata, cisDescriptions)
 
-		kind := "fail"
-		if severityLevelEquivalence[issue.Severity] == "none" {
-			kind = "informational"
+		categoryTag := GetCategoryTag(issue.Category)
+		tags := []string{categoryTag}
+		cwe := issue.CWE
+		if cwe != "" {
+			cweTag := GetCWETag(cwe)
+			tags = append(tags, cweTag)
 		}
+
 		for idx := range issue.Files {
 			line := issue.Files[idx].Line
 			if line < 1 {
 				line = 1
 			}
-			resourceLocation := issue.Files[idx].ResourceLocation
-			startLocation := sarifResourceLocation{
-				Line: resourceLocation.ResourceStart.Line,
-				Col:  resourceLocation.ResourceStart.Col,
+			vulnerability := issue.Files[idx]
+
+			resourceType := vulnerability.ResourceType
+			resourceName := vulnerability.ResourceName
+			resourceTypeTag := GetResourceTypeTag(resourceType)
+			resourceNameTag := GetResourceNameTag(resourceName)
+
+			resultTags := append(tags, resourceTypeTag, resourceNameTag)
+
+			resourceLocation := vulnerability.ResourceLocation
+
+			if resourceLocation.Start.Line < 1 {
+				resourceLocation.Start.Line = 1
+			}
+			if resourceLocation.End.Line < 1 {
+				resourceLocation.End.Line = resourceLocation.Start.Line
+			}
+			if resourceLocation.Start.Col < 1 {
+				resourceLocation.Start.Col = 1
+			}
+			if resourceLocation.End.Col < 1 {
+				resourceLocation.End.Col = resourceLocation.Start.Col
 			}
 
-			if startLocation.Col < 1 {
-				startLocation.Col = 1
+			resourceStartLocation := model.SarifResourceLocation{
+				Line: resourceLocation.Start.Line,
+				Col:  resourceLocation.Start.Col,
 			}
-			// endLocation := sarifResourceLocation{
-			// 	Line: resourceLocation.ResourceEnd.Line,
-			// 	Col:  resourceLocation.ResourceEnd.Col,
-			// }
+			resourceEndLocation := model.SarifResourceLocation{
+				Line: resourceLocation.End.Line,
+				Col:  resourceLocation.End.Col,
+			}
+
+			remediationLocation := vulnerability.RemediationLocation
+			remediationStartLocation := model.SarifResourceLocation{
+				Line: remediationLocation.Start.Line,
+				Col:  remediationLocation.Start.Col,
+			}
+			remediationEndLocation := model.SarifResourceLocation{
+				Line: remediationLocation.End.Line,
+				Col:  remediationLocation.End.Col,
+			}
+
+			if resourceStartLocation.Col < 1 {
+				resourceStartLocation.Col = 1
+			}
+
 			absoluteFilePath := strings.ReplaceAll(issue.Files[idx].FileName, "../", "")
 			result := sarifResult{
-				ResultRuleID:    issue.QueryID,
+				ResultRuleID:    issue.QueryName,
 				ResultRuleIndex: ruleIndex,
-				ResultKind:      kind,
 				ResultLevel:     severityLevelEquivalence[issue.Severity],
 				ResultMessage: sarifMessage{
 					Text: issue.Files[idx].KeyActualValue,
-					MessageProperties: sarifProperties{
-						"platform": issue.Platform,
-					},
 				},
-				ResultLocations: []sarifLocation{
+				ResultLocations: []SarifLocation{
 					{
 						PhysicalLocation: sarifPhysicalLocation{
 							ArtifactLocation: sarifArtifactLocation{ArtifactURI: absoluteFilePath},
-							Region: sarifRegion{
-								StartLine:   line,
-								EndLine:     line + 1,
-								StartColumn: startLocation.Col,
-								EndColumn:   1,
-								// StartResource: startLocation,
-								// EndResource:   endLocation,
+							Region: model.SarifRegion{
+								StartLine:   resourceStartLocation.Line,
+								EndLine:     resourceEndLocation.Line,
+								StartColumn: resourceStartLocation.Col,
+								EndColumn:   resourceEndLocation.Col,
 							},
 						},
 					},
 				},
+				ResultProperties: sarifProperties{
+					"tags": resultTags,
+				},
+				PartialFingerprints: SarifPartialFingerprints{
+					DatadogFingerprint: GetDatadogFingerprintHash(sciInfo, absoluteFilePath, line, issue.QueryID),
+				},
+			}
+			if vulnerability.Remediation != "" && vulnerability.RemediationType != "" {
+				sarifFix, err := remediationsHelper.TransformToSarifFix(
+					vulnerability,
+					remediationStartLocation,
+					remediationEndLocation,
+				)
+				if err != nil {
+					// we do not want to fail the whole process if we cannot transform the fix
+					// so we just log the error and continue
+					log.Err(err).Msgf("failed to transform to sarif fix: %v", err)
+				} else {
+					// we want the location displayed in the UI to properly highlight the remediation
+					result.ResultLocations[0].PhysicalLocation.Region.StartLine = remediationStartLocation.Line
+					result.ResultLocations[0].PhysicalLocation.Region.EndLine = remediationEndLocation.Line
+
+					result.ResultFixes = append(result.ResultFixes, sarifFix)
+				}
 			}
 			sr.Runs[0].Results = append(sr.Runs[0].Results, result)
 		}
 		return issue.CWE
 	}
 	return ""
+}
+
+func (sr *sarifReport) SetToolVersionType(runType string) {
+	if len(runType) > 0 {
+		for idx := range sr.Runs {
+			sr.Runs[idx].Tool.Driver.ToolVersion = runType
+		}
+		log.Info().Msgf("Tool version set to %s", runType)
+	}
 }
 
 func (sr *sarifReport) AddTags(summary *model.Summary, diffAware *model.DiffAware) error {
@@ -722,4 +772,21 @@ func (sr *sarifReport) AddTags(summary *model.Summary, diffAware *model.DiffAwar
 	)
 
 	return nil
+}
+
+func (sr *sarifReport) ResolveFilepaths(basePath string) error {
+	for idx := range sr.Runs[0].Results {
+		artifactLocation := &sr.Runs[0].Results[idx].ResultLocations[0].PhysicalLocation.ArtifactLocation.ArtifactURI
+		resolvedLocation := strings.TrimPrefix(*artifactLocation, basePath+"/")
+		sr.Runs[0].Results[idx].ResultLocations[0].PhysicalLocation.ArtifactLocation.ArtifactURI = resolvedLocation
+	}
+	return nil
+}
+
+func GetDatadogFingerprintHash(sciInfo model.SCIInfo, filePath string, startLine int, ruleId string) string {
+	runTypeRelatedInfo := sciInfo.RepositoryCommitInfo.CommitSHA
+	if sciInfo.RunType == "full_scan" {
+		runTypeRelatedInfo = time.Now().Format("2006/01/02")
+	}
+	return StringToHash(fmt.Sprintf("%s|%s|%s|%s|%d|%s", sciInfo.RunType, runTypeRelatedInfo, sciInfo.RepositoryCommitInfo.RepositoryUrl, filePath, startLine, ruleId))
 }

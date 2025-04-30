@@ -6,13 +6,22 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/Checkmarx/kics/pkg/model"
 )
 
+const (
+	kicsRuleIDTag   = "KICS_RuleID:%s"
+	cweTag          = "CWE:%s"
+	resourceTypeTag = "IAC_RESOURCE_TYPE:%s"
+	resourceNameTag = "IAC_RESOURCE_NAME:%s"
+)
+
 func GetScanDurationTag(summary model.Summary) string {
-	scanDuration := summary.Times.End.Sub(summary.Times.Start).Seconds()
+	scanDuration := int(summary.Times.End.Sub(summary.Times.Start).Seconds())
 	executionTimeTag := fmt.Sprintf(executionTimeTag, scanDuration)
 	return executionTimeTag
 }
@@ -35,4 +44,28 @@ func GetDiffAwareFilesTag(diffAware model.DiffAware) string {
 
 func GetCategoryTag(category string) string {
 	return fmt.Sprintf(categoryTag, category)
+}
+
+func GetKICSRuleIDTag(ruleID string) string {
+	return fmt.Sprintf(kicsRuleIDTag, ruleID)
+}
+
+func GetCWETag(cwe string) string {
+	return fmt.Sprintf(cweTag, cwe)
+}
+
+func GetResourceTypeTag(resourceType string) string {
+	return fmt.Sprintf(resourceTypeTag, resourceType)
+}
+
+func GetResourceNameTag(resourceName string) string {
+	return fmt.Sprintf(resourceNameTag, resourceName)
+}
+
+// stringToHash returns a SHA256 hash of the input string.
+func StringToHash(str string) string {
+	hash := sha256.New()
+	hash.Write([]byte(str))
+	hashed := hash.Sum(nil)
+	return hex.EncodeToString(hashed)
 }

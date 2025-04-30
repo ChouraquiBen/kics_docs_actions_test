@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -72,11 +73,11 @@ var (
 
 var (
 	// KICSCommentRgxp is the regexp to identify if a comment is a KICS comment
-	KICSCommentRgxp = regexp.MustCompile(`(^|\n)((/{2})|#|;)*\s*kics-scan\s*`)
+	KICSCommentRgxp = regexp.MustCompile(`(^|\n)((/{2})|#|;)*\s*dd-iac-scan\s*`)
 	// KICSGetContentCommentRgxp to gets the kics comment on the hel case
-	KICSGetContentCommentRgxp = regexp.MustCompile(`(^|\n)((/{2})|#|;)*\s*kics-scan([^\n]*)\n`)
+	KICSGetContentCommentRgxp = regexp.MustCompile(`(^|\n)((/{2})|#|;)*\s*dd-iac-scan([^\n]*)\n`)
 	// KICSCommentRgxpYaml is the regexp to identify if the comment has KICS comment at the end of the comment in YAML
-	KICSCommentRgxpYaml = regexp.MustCompile(`((/{2})|#)*\s*kics-scan\s*(ignore-line|ignore-block)\s*\n*$`)
+	KICSCommentRgxpYaml = regexp.MustCompile(`((/{2})|#)*\s*dd-iac-scan\s*(ignore-line|ignore-block)\s*\n*$`)
 )
 
 // Version - is the model for the version response
@@ -87,11 +88,15 @@ type Version struct {
 
 // VulnerabilityLines is the representation of the found line for issue
 type VulnerabilityLines struct {
-	Line                  int
-	VulnLines             *[]CodeLine
-	LineWithVulnerability string
-	ResolvedFile          string
-	ResourceLocation      ResourceLocation
+	Line                   int
+	VulnLines              *[]CodeLine
+	LineWithVulnerability  string
+	ResolvedFile           string
+	VulnerablilityLocation ResourceLocation
+	RemediationLocation    ResourceLocation
+	ResourceSource         string
+	FileSource             []string
+	BlockLocation          ResourceLocation
 }
 
 // CommentCommand represents a command given from a comment
@@ -114,8 +119,8 @@ type CodeLine struct {
 
 // ResourceLocation is the line information of the resource with their respective start and end positions
 type ResourceLocation struct {
-	ResourceStart ResourceLine
-	ResourceEnd   ResourceLine
+	Start ResourceLine
+	End   ResourceLine
 }
 
 // ResourceLine is the line information of the resource with their respective positions
@@ -170,38 +175,44 @@ type QueryMetadata struct {
 // Vulnerability is a representation of a detected vulnerability in scanned files
 // after running a query
 type Vulnerability struct {
-	ID               int              `json:"id"`
-	ScanID           string           `db:"scan_id" json:"-"`
-	SimilarityID     string           `db:"similarity_id" json:"similarityID"`
-	OldSimilarityID  string           `db:"old_similarity_id" json:"oldSimilarityID"`
-	FileID           string           `db:"file_id" json:"-"`
-	FileName         string           `db:"file_name" json:"fileName"`
-	QueryID          string           `db:"query_id" json:"queryID"`
-	QueryName        string           `db:"query_name" json:"queryName"`
-	QueryURI         string           `json:"-"`
-	Category         string           `json:"category"`
-	Experimental     bool             `json:"experimental"`
-	Description      string           `json:"description"`
-	DescriptionID    string           `json:"descriptionID"`
-	Platform         string           `db:"platform" json:"platform"`
-	CWE              string           `db:"cwe" json:"cwe"`
-	Severity         Severity         `json:"severity"`
-	Line             int              `json:"line"`
-	ResourceLocation ResourceLocation `json:"resourceLocation"`
-	VulnLines        *[]CodeLine      `json:"vulnLines"`
-	ResourceType     string           `db:"resource_type" json:"resourceType"`
-	ResourceName     string           `db:"resource_name" json:"resourceName"`
-	IssueType        IssueType        `db:"issue_type" json:"issueType"`
-	SearchKey        string           `db:"search_key" json:"searchKey"`
-	SearchLine       int              `db:"search_line" json:"searchLine"`
-	SearchValue      string           `db:"search_value" json:"searchValue"`
-	KeyExpectedValue string           `db:"key_expected_value" json:"expectedValue"`
-	KeyActualValue   string           `db:"key_actual_value" json:"actualValue"`
-	Value            *string          `db:"value" json:"value"`
-	Output           string           `json:"-"`
-	CloudProvider    string           `json:"cloud_provider"`
-	Remediation      string           `db:"remediation" json:"remediation"`
-	RemediationType  string           `db:"remediation_type" json:"remediation_type"`
+	ID                    int              `json:"id"`
+	ScanID                string           `db:"scan_id" json:"-"`
+	SimilarityID          string           `db:"similarity_id" json:"similarityID"`
+	OldSimilarityID       string           `db:"old_similarity_id" json:"oldSimilarityID"`
+	FileID                string           `db:"file_id" json:"-"`
+	FileName              string           `db:"file_name" json:"fileName"`
+	QueryID               string           `db:"query_id" json:"queryID"`
+	QueryName             string           `db:"query_name" json:"queryName"`
+	QueryURI              string           `json:"-"`
+	Category              string           `json:"category"`
+	Experimental          bool             `json:"experimental"`
+	Description           string           `json:"description"`
+	DescriptionID         string           `json:"descriptionID"`
+	Platform              string           `db:"platform" json:"platform"`
+	CWE                   string           `db:"cwe" json:"cwe"`
+	Severity              Severity         `json:"severity"`
+	Line                  int              `json:"line"`
+	VulnerabilityLocation ResourceLocation `json:"resourceLocation"`
+	VulnLines             *[]CodeLine      `json:"vulnLines"`
+	ResourceType          string           `db:"resource_type" json:"resourceType"`
+	ResourceName          string           `db:"resource_name" json:"resourceName"`
+	IssueType             IssueType        `db:"issue_type" json:"issueType"`
+	SearchKey             string           `db:"search_key" json:"searchKey"`
+	SearchLine            int              `db:"search_line" json:"searchLine"`
+	SearchValue           string           `db:"search_value" json:"searchValue"`
+	KeyExpectedValue      string           `db:"key_expected_value" json:"expectedValue"`
+	KeyActualValue        string           `db:"key_actual_value" json:"actualValue"`
+	Value                 *string          `db:"value" json:"value"`
+	Output                string           `json:"-"`
+	CloudProvider         string           `json:"cloud_provider"`
+	Remediation           string           `db:"remediation" json:"remediation"`
+	RemediationType       string           `db:"remediation_type" json:"remediation_type"`
+	RemediationLocation   ResourceLocation `json:"remediationLocation"`
+	QueryDuration         time.Duration    `json:"query_duration"`
+	LineWithVulnerability string           `json:"lineWithVulnerability"`
+	ResourceSource        string           `json:"resourceSource"`
+	FileSource            []string         `json:"fileSource"`
+	BlockLocation         ResourceLocation `json:"blockLocation"`
 }
 
 // QueryConfig is a struct that contains the fileKind and platform of the rego query
@@ -321,4 +332,43 @@ type ResolvedFile struct {
 	Path         string
 	Content      []byte
 	LinesContent *[]string
+}
+
+type SarifResourceLocation struct {
+	Line int `json:"line"`
+	Col  int `json:"col"`
+}
+
+type SarifFix struct {
+	ArtifactChanges []ArtifactChange `json:"artifactChanges"`
+	Description     FixMessage       `json:"description"`
+}
+
+type ArtifactChange struct {
+	ArtifactLocation ArtifactLocation `json:"artifactLocation"`
+	Replacements     []FixReplacement `json:"replacements"`
+}
+
+type ArtifactLocation struct {
+	URI string `json:"uri"`
+}
+
+type FixReplacement struct {
+	DeletedRegion   SarifRegion `json:"deletedRegion"`
+	InsertedContent FixContent  `json:"insertedContent,omitempty"`
+}
+
+type FixContent struct {
+	Text string `json:"text"`
+}
+
+type FixMessage struct {
+	Text string `json:"text"`
+}
+
+type SarifRegion struct {
+	StartLine   int `json:"startLine"`
+	EndLine     int `json:"endLine"`
+	StartColumn int `json:"startColumn"`
+	EndColumn   int `json:"endColumn"`
 }

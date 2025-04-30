@@ -9,6 +9,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -129,37 +130,17 @@ func GetPathToCustomLibrary(platform, libraryPathFlag string) string {
 }
 
 // GetQueryLibrary returns the library.rego for the platform passed in the argument
-func (s *FilesystemSource) GetQueryLibrary(baseDir embed.FS, platform string) (RegoLibraries, error) {
+func (s *FilesystemSource) GetQueryLibrary(platform string) (RegoLibraries, error) {
 	library := GetPathToCustomLibrary(platform, s.Library)
-	customLibraryCode := ""
-	customLibraryData := emptyInputData
 
 	if library == "" {
 		return RegoLibraries{}, errors.New("unable to get libraries path")
 	}
 
-	if library != kicsDefault {
-		byteContent, err := os.ReadFile(library)
-		if err != nil {
-			return RegoLibraries{}, err
-		}
-		customLibraryCode = string(byteContent)
-		customLibraryData, err = readInputData(baseDir, strings.TrimSuffix(library, filepath.Ext(library))+".json")
-		if err != nil {
-			log.Debug().Msg(err.Error())
-		}
-	} else {
-		log.Debug().Msgf("Custom library %s not provided. Loading embedded library instead", platform)
-	}
 	// getting embedded library
 	embeddedLibraryCode, errGettingEmbeddedLibrary := assets.GetEmbeddedLibrary(strings.ToLower(platform))
 	if errGettingEmbeddedLibrary != nil {
 		return RegoLibraries{}, errGettingEmbeddedLibrary
-	}
-
-	mergedLibraryCode, errMergeLibs := mergeLibraries(customLibraryCode, embeddedLibraryCode)
-	if errMergeLibs != nil {
-		return RegoLibraries{}, errMergeLibs
 	}
 
 	embeddedLibraryData, errGettingEmbeddedLibraryCode := assets.GetEmbeddedLibraryData(strings.ToLower(platform))
@@ -167,14 +148,10 @@ func (s *FilesystemSource) GetQueryLibrary(baseDir embed.FS, platform string) (R
 		log.Debug().Msgf("Could not open embedded library data for %s platform", platform)
 		embeddedLibraryData = emptyInputData
 	}
-	mergedLibraryData, errMergingLibraryData := MergeInputData(embeddedLibraryData, customLibraryData)
-	if errMergingLibraryData != nil {
-		log.Debug().Msgf("Could not merge library data for %s platform", platform)
-	}
 
 	regoLibrary := RegoLibraries{
-		LibraryCode:      mergedLibraryCode,
-		LibraryInputData: mergedLibraryData,
+		LibraryCode:      embeddedLibraryCode,
+		LibraryInputData: embeddedLibraryData,
 	}
 	return regoLibrary, nil
 }
@@ -252,20 +229,16 @@ func checkQueryExclude(metadata map[string]interface{}, queryParameters *QueryIn
 
 // GetQueries walks a given filesource path returns all queries found in an array of
 // QueryMetadata struct
-func (s *FilesystemSource) GetQueries(queryParameters *QueryInspectorParameters, queryDir embed.FS) ([]model.QueryMetadata, error) {
+func (s *FilesystemSource) GetQueries(queryParameters *QueryInspectorParameters) ([]model.QueryMetadata, error) {
 	// queryDirs, err := s.iterateSources()
 	log.Info().Msg("iterateEmbeddedQuerySources()")
-	dirs, err := s.iterateEmbeddedQuerySources(queryDir)
+	dirs, err := s.iterateEmbeddedQuerySources()
 	if err != nil {
 		return nil, err
 	}
-	log.Info().Msgf("dirs: %d", len(dirs))
 
-	queries := s.iterateQueryDirs(queryDir, dirs, queryParameters)
-	log.Info().Msgf("queries: %d", len(queries))
-	if len(queries) > 0 {
-		log.Info().Msgf("First query found: %v", queries[0])
-	}
+	queries := s.iterateQueryDirs(dirs, queryParameters)
+
 	return queries, nil
 }
 
@@ -301,43 +274,38 @@ func (s *FilesystemSource) iterateSources() ([]string, error) {
 	return queryDirs, nil
 }
 
-func getAllFilenames(fs *embed.FS, path string) (out []string, err error) {
-	if len(path) == 0 {
-		path = "."
-	}
-	entries, err := fs.ReadDir(path)
+func getAllDirs(embedfs *embed.FS, path string) ([]string, error) {
+	var out []string
+	err := fs.WalkDir(embedfs, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			log.Info().Msgf("Failed to walk directory: %s", path)
+			return err
+		}
+		fmt.Printf("path=%q, isDir=%v\n", path, d.IsDir())
+		if d.IsDir() {
+			out = append(out, path)
+		}
+		return nil
+	})
 	if err != nil {
+		log.Error().Msgf("Failed to walk directory: %s: %v", path, err)
 		return nil, err
 	}
-	for _, entry := range entries {
-		fp := filepath.Join(path, entry.Name())
-		if entry.IsDir() {
-			res, err := getAllFilenames(fs, fp)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, res...)
-			continue
-		}
-		if entry.Name() == QueryFileName {
-			out = append(out, fp)
-		}
-	}
-	return
+	return out, nil
 }
 
 // iterate over the embedded query directory and read the respective queries
-func (s *FilesystemSource) iterateEmbeddedQuerySources(queryDir embed.FS) ([]string, error) {
+func (s *FilesystemSource) iterateEmbeddedQuerySources() ([]string, error) {
 	// dirEntries, err := queryDir.ReadDir(".")
 	// if err != nil {
 	// 	return nil, errors.Wrap(err, "failed to read embedded query directory")
 	// }
-	log.Info().Msg("getAllFilenames()")
-	queryDirs, err := getAllFilenames(&queryDir, "")
+	log.Info().Msg("getAllDirs()")
+
+	queryDirs, err := assets.GetEmbeddedQueryDirs()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get query sources")
 	}
-	log.Info().Msgf("queryDirs: %v", queryDirs)
 	// err := fs.WalkDir(queryDir, ".", func(p string, d fs.DirEntry, err error) error {
 	// 	if err != nil {
 	// 		return err
@@ -363,12 +331,11 @@ func (s *FilesystemSource) iterateEmbeddedQuerySources(queryDir embed.FS) ([]str
 }
 
 // iterateQueryDirs iterates all query directories and reads the respective queries
-func (s *FilesystemSource) iterateQueryDirs(baseDir embed.FS, queryDirs []string, queryParameters *QueryInspectorParameters) []model.QueryMetadata {
+func (s *FilesystemSource) iterateQueryDirs(queryDirs []string, queryParameters *QueryInspectorParameters) []model.QueryMetadata {
 	queries := make([]model.QueryMetadata, 0, len(queryDirs))
 
 	for _, queryDir := range queryDirs {
-		log.Info().Msg("reading query")
-		query, errRQ := ReadQuery(baseDir, queryDir)
+		query, errRQ := ReadQuery(queryDir)
 		if errRQ != nil {
 			// sentryReport.ReportSentry(&sentryReport.Report{
 			// 	Message:  fmt.Sprintf("Query provider failed to read query, query=%s", path.Base(queryDir)),
@@ -378,7 +345,6 @@ func (s *FilesystemSource) iterateQueryDirs(baseDir embed.FS, queryDirs []string
 			// }, true)
 			continue
 		}
-		log.Info().Msgf("Query found: %s", query.Query)
 
 		if query.Experimental && !queryParameters.ExperimentalQueries {
 			continue
@@ -392,20 +358,20 @@ func (s *FilesystemSource) iterateQueryDirs(baseDir embed.FS, queryDirs []string
 			continue
 		}
 
-		customInputData, readInputErr := readInputData(baseDir, filepath.Join(queryParameters.InputDataPath, query.Metadata["id"].(string)+".json"))
-		if readInputErr != nil {
-			log.Err(errRQ).
-				Msgf("failed to read input data, query=%s", path.Base(queryDir))
-			continue
-		}
+		// customInputData, readInputErr := readInputData(baseDir, filepath.Join(queryParameters.InputDataPath, query.Metadata["id"].(string)+".json"))
+		// if readInputErr != nil {
+		// 	log.Err(errRQ).
+		// 		Msgf("failed to read input data, query=%s", path.Base(queryDir))
+		// 	continue
+		// }
 
-		inputData, mergeError := MergeInputData(query.InputData, customInputData)
-		if mergeError != nil {
-			log.Err(mergeError).
-				Msgf("failed to merge input data, query=%s", path.Base(queryDir))
-			continue
-		}
-		query.InputData = inputData
+		// inputData, mergeError := MergeInputData(query.InputData, customInputData)
+		// if mergeError != nil {
+		// 	log.Err(mergeError).
+		// 		Msgf("failed to merge input data, query=%s", path.Base(queryDir))
+		// 	continue
+		// }
+		// query.InputData = inputData
 
 		if len(queryParameters.IncludeQueries.ByIDs) > 0 {
 			if checkQueryInclude(query.Metadata["id"], queryParameters.IncludeQueries.ByIDs) {
@@ -413,8 +379,6 @@ func (s *FilesystemSource) iterateQueryDirs(baseDir embed.FS, queryDirs []string
 			}
 		} else {
 			if checkQueryExclude(query.Metadata, queryParameters) {
-				log.Debug().
-					Msgf("Excluding query ID: %s category: %s severity: %s", query.Metadata["id"], query.Metadata["category"], query.Metadata["severity"])
 				continue
 			}
 
@@ -440,14 +404,14 @@ func validateMetadata(metadata map[string]interface{}) (exist bool, field string
 
 // ReadQuery reads query's files for a given path and returns a QueryMetadata struct with it's
 // content
-func ReadQuery(baseDir embed.FS, queryDir string) (model.QueryMetadata, error) {
-	queryContent, err := baseDir.ReadFile(filepath.Clean(path.Join(queryDir, QueryFileName)))
+func ReadQuery(queryDir string) (model.QueryMetadata, error) {
+	queryContent, err := assets.GetEmbeddedQueryFile(path.Join(queryDir, QueryFileName))
 	// queryContent, err := os.ReadFile(filepath.Clean(path.Join(queryDir, QueryFileName)))
 	if err != nil {
 		return model.QueryMetadata{}, errors.Wrapf(err, "failed to read query %s", path.Base(queryDir))
 	}
 
-	metadata, err := ReadMetadata(baseDir, queryDir)
+	metadata, err := ReadMetadata(queryDir)
 	if err != nil {
 		return model.QueryMetadata{}, errors.Wrapf(err, "failed to read query %s", path.Base(queryDir))
 	}
@@ -458,18 +422,10 @@ func ReadQuery(baseDir embed.FS, queryDir string) (model.QueryMetadata, error) {
 
 	platform := getPlatform(metadata["platform"].(string))
 
-	inputData, errInputData := readInputData(baseDir, filepath.Join(queryDir, "data.json"))
-	if errInputData != nil {
-		log.Err(errInputData).
-			Msgf("Query provider failed to read input data, query=%s", path.Base(queryDir))
-	}
-
 	aggregation := 1
 	if agg, ok := metadata["aggregation"]; ok {
 		aggregation = int(agg.(float64))
 	}
-
-	log.Info().Msgf("Query found: %s metadata: %v input: %s", string(queryContent), metadata, inputData)
 
 	experimental := getExperimental(metadata["experimental"])
 
@@ -478,36 +434,23 @@ func ReadQuery(baseDir embed.FS, queryDir string) (model.QueryMetadata, error) {
 		Content:      string(queryContent),
 		Metadata:     metadata,
 		Platform:     platform,
-		InputData:    inputData,
+		InputData:    "{}",
 		Aggregation:  aggregation,
 		Experimental: experimental,
 	}, nil
 }
 
 // ReadMetadata read query's metadata file inside the query directory
-func ReadMetadata(baseDir embed.FS, queryDir string) (map[string]interface{}, error) {
-	f, err := baseDir.ReadFile(filepath.Clean(path.Join(queryDir, MetadataFileName)))
+func ReadMetadata(queryDir string) (map[string]interface{}, error) {
+	f, err := assets.GetEmbeddedQueryFile(filepath.Clean(path.Join(queryDir, MetadataFileName)))
 	// f, err := os.Open(filepath.Clean(path.Join(queryDir, MetadataFileName)))
 	if err != nil {
-		// sentryReport.ReportSentry(&sentryReport.Report{
-		// 	Message:  fmt.Sprintf("Queries provider can't read metadata, query=%s", path.Base(queryDir)),
-		// 	Err:      err,
-		// 	Location: "func ReadMetadata()",
-		// 	FileName: path.Base(queryDir),
-		// }, true)
 		log.Error().Msgf("Queries provider can't read metadata, query=%s: %v", path.Base(queryDir), err)
 		return nil, err
 	}
 
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(f, &metadata); err != nil {
-		// sentryReport.ReportSentry(&sentryReport.Report{
-		// 	Message:  fmt.Sprintf("Queries provider can't unmarshal metadata, query=%s", path.Base(queryDir)),
-		// 	Err:      err,
-		// 	Location: "func ReadMetadata()",
-		// 	FileName: path.Base(queryDir),
-		// }, true)
-
+	if err := json.Unmarshal([]byte(f), &metadata); err != nil {
 		return nil, err
 	}
 
@@ -550,13 +493,14 @@ func getExperimental(experimental interface{}) bool {
 	}
 }
 
-func readInputData(baseDir embed.FS, inputDataPath string) (string, error) {
-	inputData, err := baseDir.ReadFile(filepath.Clean(inputDataPath))
+func readInputData(inputDataPath string) (string, error) {
+	inputData, err := assets.GetEmbeddedQueryFile(filepath.Clean(inputDataPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return emptyInputData, nil
 		}
 		return emptyInputData, errors.Wrapf(err, "failed to read query input data %s", path.Base(inputDataPath))
 	}
+	log.Info().Msgf("Input data found in file: %s", string(inputData))
 	return string(inputData), nil
 }

@@ -7,7 +7,6 @@ package remediation
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"errors"
 	"time"
@@ -158,6 +157,7 @@ func getPayload(filePath string, content []byte, openAPIResolveReferences bool, 
 
 // runQuery runs a query and returns its results
 func runQuery(r *runQueryInfo) []model.Vulnerability {
+	queryStart := time.Now()
 	queryExecTimeout := time.Duration(60) * time.Second
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), queryExecTimeout)
@@ -186,7 +186,7 @@ func runQuery(r *runQueryInfo) []model.Vulnerability {
 
 	timeoutCtxToDecode, cancelDecode := context.WithTimeout(context.Background(), queryExecTimeout)
 	defer cancelDecode()
-	decoded, err := r.inspector.DecodeQueryResults(queryCtx, timeoutCtxToDecode, results)
+	decoded, err := r.inspector.DecodeQueryResults(queryCtx, timeoutCtxToDecode, results, time.Since(queryStart))
 
 	if err != nil {
 		log.Err(err)
@@ -278,8 +278,6 @@ func initScan(queryID string) (*engine.Inspector, error) {
 		false,
 		c.ScanParams.ParallelScanFlag,
 		c.ScanParams.KicsComputeNewSimID,
-		embed.FS{},
-		"",
 	)
 
 	return inspector, err

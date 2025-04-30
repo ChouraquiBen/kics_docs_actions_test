@@ -6,7 +6,6 @@
 package model
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,23 +25,28 @@ type SeveritySummary struct {
 
 // VulnerableFile contains information of a vulnerable file and where the vulnerability was found
 type VulnerableFile struct {
-	FileName         string           `json:"file_name"`
-	SimilarityID     string           `json:"similarity_id"`
-	OldSimilarityID  string           `json:"old_similarity_id,omitempty"`
-	Line             int              `json:"line"`
-	ResourceLocation ResourceLocation `json:"resource_location"`
-	VulnLines        *[]CodeLine      `json:"-"`
-	ResourceType     string           `json:"resource_type,omitempty"`
-	ResourceName     string           `json:"resource_name,omitempty"`
-	IssueType        IssueType        `json:"issue_type"`
-	SearchKey        string           `json:"search_key"`
-	SearchLine       int              `json:"search_line"`
-	SearchValue      string           `json:"search_value"`
-	KeyExpectedValue string           `json:"expected_value"`
-	KeyActualValue   string           `json:"actual_value"`
-	Value            *string          `json:"value,omitempty"`
-	Remediation      string           `json:"remediation,omitempty"`
-	RemediationType  string           `json:"remediation_type,omitempty"`
+	FileName              string           `json:"file_name"`
+	SimilarityID          string           `json:"similarity_id"`
+	OldSimilarityID       string           `json:"old_similarity_id,omitempty"`
+	Line                  int              `json:"line"`
+	ResourceLocation      ResourceLocation `json:"resource_location"`
+	VulnLines             *[]CodeLine      `json:"-"`
+	ResourceType          string           `json:"resource_type,omitempty"`
+	ResourceName          string           `json:"resource_name,omitempty"`
+	IssueType             IssueType        `json:"issue_type"`
+	SearchKey             string           `json:"search_key"`
+	SearchLine            int              `json:"search_line"`
+	SearchValue           string           `json:"search_value"`
+	KeyExpectedValue      string           `json:"expected_value"`
+	KeyActualValue        string           `json:"actual_value"`
+	Value                 *string          `json:"value,omitempty"`
+	Remediation           string           `json:"remediation,omitempty"`
+	RemediationType       string           `json:"remediation_type,omitempty"`
+	RemediationLocation   ResourceLocation `json:"remediation_location,omitempty"`
+	LineWithVulnerability string           `json:"line_content,omitempty"`
+	ResourceSource        string           `json:"resource_source,omitempty"`
+	FileSource            []string         `json:"file_source,omitempty"`
+	BlockLocation         ResourceLocation `json:"block_location,omitempty"`
 }
 
 // QueryResult contains a query that tested positive ID, name, severity and a list of files that tested vulnerable
@@ -84,6 +88,7 @@ type Counters struct {
 	TotalQueries           int `json:"queries_total"`
 	FailedToExecuteQueries int `json:"queries_failed_to_execute"`
 	FailedSimilarityID     int `json:"queries_failed_to_compute_similarity_id"`
+	FoundResources         int `json:"resources_found"`
 }
 
 // Times represents an object that contains the start and end time of the scan
@@ -132,7 +137,7 @@ func getRelativePath(basePath, filePath string) string {
 	} else {
 		returnPath = relativePath
 	}
-	returnPath = strings.Replace(returnPath, "innovation-week-cloud-to-tf/", "", 1)
+
 	return returnPath
 }
 
@@ -178,21 +183,16 @@ func removeURLCredentials(url string) string {
 	return strings.Replace(url, authGroup, "", 1)
 }
 
-func resolvePath(filePath string, pathExtractionMap map[string]ExtractedPathObject) string {
+func resolvePath(filePath string, pathExtractionMap map[string]ExtractedPathObject, downloadDir string) string {
 	var returnPath string
 	returnPath = replaceIfTemporaryPath(filepath.FromSlash(filePath), pathExtractionMap)
-	pwd, err := os.Getwd()
-	if err != nil {
-		log.Error().Msgf("Unable to get current working dir %s", err)
-		return returnPath
-	}
-	returnPath = getRelativePath(pwd, returnPath)
+	returnPath = getRelativePath(downloadDir, returnPath)
 	return returnPath
 }
 
 // CreateSummary creates a report for a single scan, based on its scanID
 func CreateSummary(counters Counters, vulnerabilities []Vulnerability,
-	scanID string, pathExtractionMap map[string]ExtractedPathObject, version Version) Summary {
+	scanID string, pathExtractionMap map[string]ExtractedPathObject, version Version, downloadDir string) Summary {
 	log.Debug().Msg("model.CreateSummary()")
 	q := make(map[string]QueryResult, len(vulnerabilities))
 	severitySummary := SeveritySummary{
@@ -218,27 +218,32 @@ func CreateSummary(counters Counters, vulnerabilities []Vulnerability,
 			}
 		}
 
-		resolvedPath := resolvePath(item.FileName, pathExtractionMap)
+		resolvedPath := resolvePath(item.FileName, pathExtractionMap, downloadDir)
 
 		qItem := q[item.QueryID]
 		qItem.Files = append(qItem.Files, VulnerableFile{
-			FileName:         resolvedPath,
-			SimilarityID:     item.SimilarityID,
-			OldSimilarityID:  item.OldSimilarityID,
-			Line:             item.Line,
-			VulnLines:        item.VulnLines,
-			ResourceType:     item.ResourceType,
-			ResourceName:     item.ResourceName,
-			IssueType:        item.IssueType,
-			SearchKey:        item.SearchKey,
-			SearchValue:      item.SearchValue,
-			SearchLine:       item.SearchLine,
-			KeyExpectedValue: item.KeyExpectedValue,
-			KeyActualValue:   item.KeyActualValue,
-			Value:            item.Value,
-			Remediation:      item.Remediation,
-			RemediationType:  item.RemediationType,
-			ResourceLocation: item.ResourceLocation,
+			FileName:              resolvedPath,
+			SimilarityID:          item.SimilarityID,
+			OldSimilarityID:       item.OldSimilarityID,
+			Line:                  item.Line,
+			VulnLines:             item.VulnLines,
+			ResourceType:          item.ResourceType,
+			ResourceName:          item.ResourceName,
+			IssueType:             item.IssueType,
+			SearchKey:             item.SearchKey,
+			SearchValue:           item.SearchValue,
+			SearchLine:            item.SearchLine,
+			KeyExpectedValue:      item.KeyExpectedValue,
+			KeyActualValue:        item.KeyActualValue,
+			Value:                 item.Value,
+			Remediation:           item.Remediation,
+			RemediationType:       item.RemediationType,
+			ResourceLocation:      item.VulnerabilityLocation,
+			LineWithVulnerability: item.LineWithVulnerability,
+			RemediationLocation:   item.RemediationLocation,
+			ResourceSource:        item.ResourceSource,
+			FileSource:            item.FileSource,
+			BlockLocation:         item.BlockLocation,
 		})
 
 		filePaths[resolvedPath] = item.FileName

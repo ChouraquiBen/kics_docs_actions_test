@@ -14,7 +14,7 @@ func TestNewSarifReport(t *testing.T) {
 	sarif := NewSarifReport().(*sarifReport)
 	require.Equal(t, "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json", sarif.Schema)
 	require.Equal(t, "2.1.0", sarif.SarifVersion)
-	require.Equal(t, "KICS", sarif.Runs[0].Tool.Driver.ToolName)
+	require.Equal(t, "Datadog IaC Scanning", sarif.Runs[0].Tool.Driver.ToolName)
 	require.Equal(t, constants.URL, sarif.Runs[0].Tool.Driver.ToolURI)
 	require.Equal(t, constants.Fullname, sarif.Runs[0].Tool.Driver.ToolFullName)
 	require.Equal(t, constants.Version, sarif.Runs[0].Tool.Driver.ToolVersion)
@@ -54,7 +54,7 @@ var sarifTests = []sarifTest{
 				QueryURI:    "https://www.test.com",
 				Severity:    model.SeverityHigh,
 				Files: []model.VulnerableFile{
-					{KeyActualValue: "test", FileName: "test.json", Line: -1},
+					{KeyActualValue: "test", FileName: "test.json", Line: -1, ResourceType: "test_resource_type", ResourceName: "test_resource_name"},
 				},
 				CWE: "",
 			},
@@ -66,10 +66,10 @@ var sarifTests = []sarifTest{
 						Driver: sarifDriver{
 							Rules: []sarifRule{
 								{
-									RuleID:               "1",
+									RuleID:               "test",
 									RuleName:             "test",
 									RuleShortDescription: sarifMessage{Text: "test"},
-									RuleFullDescription:  sarifMessage{Text: "test description"},
+									RuleFullDescription:  sarifMessage{Text: "[1] test description"},
 									DefaultConfiguration: sarifConfiguration{
 										Level: "error",
 									},
@@ -93,17 +93,34 @@ var sarifTests = []sarifTest{
 					},
 					Results: []sarifResult{
 						{
-							ResultRuleID:    "1",
+							ResultRuleID:    "test",
 							ResultRuleIndex: 0,
-							ResultKind:      "fail",
-							ResultMessage:   sarifMessage{Text: "test", MessageProperties: sarifProperties{"platform": ""}},
-							ResultLocations: []sarifLocation{
+							ResultKind:      "",
+							ResultMessage:   sarifMessage{Text: "test", MessageProperties: nil},
+							ResultLocations: []SarifLocation{
 								{
 									PhysicalLocation: sarifPhysicalLocation{
 										ArtifactLocation: sarifArtifactLocation{ArtifactURI: "test.json"},
-										Region:           sarifRegion{StartLine: 1, EndLine: 2},
+										Region:           model.SarifRegion{StartLine: 0, EndLine: 0, StartColumn: 1, EndColumn: 0},
 									},
 								},
+							},
+							ResultLevel:      "error",
+							ResultProperties: sarifProperties{"tags": []string{"DATADOG_CATEGORY:", "IAC_RESOURCE_TYPE:test_resource_type", "IAC_RESOURCE_NAME:test_resource_name"}},
+							PartialFingerprints: SarifPartialFingerprints{
+								DatadogFingerprint: GetDatadogFingerprintHash(
+									model.SCIInfo{
+										RunType: "",
+										RepositoryCommitInfo: model.RepositoryCommitInfo{
+											RepositoryUrl: "",
+											Branch:        "",
+											CommitSHA:     "",
+										},
+									},
+									"test.json",
+									1,
+									"1",
+								),
 							},
 						},
 					},
@@ -149,25 +166,25 @@ var sarifTests = []sarifTest{
 		vq: []model.QueryResult{
 			{
 				QueryName:   "test",
-				QueryID:     "1",
+				QueryID:     "test",
 				Description: "test description",
 				QueryURI:    "https://www.test.com",
 				Category:    "test",
 				Severity:    model.SeverityHigh,
 				Files: []model.VulnerableFile{
-					{KeyActualValue: "test", FileName: "", Line: 1},
+					{KeyActualValue: "test", FileName: "", Line: 1, ResourceType: "test_resource_type", ResourceName: "test_resource_name"},
 				},
 				CWE: "",
 			},
 			{
 				QueryName:   "test info",
-				QueryID:     "2",
+				QueryID:     "test info",
 				Description: "test description",
 				QueryURI:    "https://www.test.com",
 				Category:    "test",
 				Severity:    model.SeverityInfo,
 				Files: []model.VulnerableFile{
-					{KeyActualValue: "test", FileName: "", Line: 1},
+					{KeyActualValue: "test", FileName: "", Line: 1, ResourceType: "test_resource_type_2", ResourceName: "test_resource_name_2"},
 				},
 				CWE: "22",
 			},
@@ -179,10 +196,10 @@ var sarifTests = []sarifTest{
 						Driver: sarifDriver{
 							Rules: []sarifRule{
 								{
-									RuleID:               "1",
+									RuleID:               "test",
 									RuleName:             "test",
 									RuleShortDescription: sarifMessage{Text: "test"},
-									RuleFullDescription:  sarifMessage{Text: "test description"},
+									RuleFullDescription:  sarifMessage{Text: "[test] test description"},
 									DefaultConfiguration: sarifConfiguration{
 										Level: "error",
 									},
@@ -202,7 +219,7 @@ var sarifTests = []sarifTest{
 									},
 								},
 								{
-									RuleID:               "2",
+									RuleID:               "test info",
 									RuleName:             "test info",
 									RuleShortDescription: sarifMessage{Text: "test"},
 									RuleFullDescription:  sarifMessage{Text: "test description"},
@@ -241,37 +258,70 @@ var sarifTests = []sarifTest{
 
 					Results: []sarifResult{
 						{
-							ResultRuleID:    "1",
+							ResultRuleID:    "test",
 							ResultRuleIndex: 0,
-							ResultKind:      "fail",
+							ResultKind:      "",
 							ResultMessage: sarifMessage{
 								Text:              "test",
-								MessageProperties: sarifProperties{"platform": ""},
+								MessageProperties: nil,
 							},
-							ResultLocations: []sarifLocation{
+							ResultLevel: "error",
+							ResultLocations: []SarifLocation{
 								{
 									PhysicalLocation: sarifPhysicalLocation{
 										ArtifactLocation: sarifArtifactLocation{ArtifactURI: ""},
-										Region:           sarifRegion{StartLine: 1, EndLine: 2},
+										Region:           model.SarifRegion{StartLine: 0, EndLine: 0, EndColumn: 0, StartColumn: 1},
 									},
 								},
 							},
+							ResultProperties: sarifProperties{"tags": []string{"DATADOG_CATEGORY:test", "IAC_RESOURCE_TYPE:test_resource_type", "IAC_RESOURCE_NAME:test_resource_name"}},
+							PartialFingerprints: SarifPartialFingerprints{
+								DatadogFingerprint: GetDatadogFingerprintHash(
+									model.SCIInfo{
+										RunType: "",
+										RepositoryCommitInfo: model.RepositoryCommitInfo{
+											RepositoryUrl: "",
+											Branch:        "",
+											CommitSHA:     "",
+										},
+									},
+									"",
+									1,
+									"test",
+								),
+							},
 						},
 						{
-							ResultRuleID:    "2",
+							ResultRuleID:    "test info",
 							ResultRuleIndex: 1,
 							ResultKind:      "informational",
 							ResultMessage: sarifMessage{
 								Text:              "test",
 								MessageProperties: sarifProperties{"platform": ""},
 							},
-							ResultLocations: []sarifLocation{
+							ResultLocations: []SarifLocation{
 								{
 									PhysicalLocation: sarifPhysicalLocation{
 										ArtifactLocation: sarifArtifactLocation{ArtifactURI: ""},
-										Region:           sarifRegion{StartLine: 1, EndLine: 2},
+										Region:           model.SarifRegion{StartLine: 1, EndLine: 2},
 									},
 								},
+							},
+							ResultProperties: sarifProperties{"tags": []string{"DATADOG_CATEGORY:test", "CWE:22", "IAC_RESOURCE_TYPE:test_resource_type_2", "IAC_RESOURCE_NAME:test_resource_name_2"}},
+							PartialFingerprints: SarifPartialFingerprints{
+								DatadogFingerprint: GetDatadogFingerprintHash(
+									model.SCIInfo{
+										RunType: "",
+										RepositoryCommitInfo: model.RepositoryCommitInfo{
+											RepositoryUrl: "",
+											Branch:        "",
+											CommitSHA:     "",
+										},
+									},
+									"",
+									1,
+									"test info",
+								),
 							},
 						},
 					},
@@ -325,10 +375,16 @@ func TestBuildSarifIssue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := NewSarifReport().(*sarifReport)
 			for _, vq := range tt.vq {
-				result.BuildSarifIssue(&vq)
+				result.BuildSarifIssue(&vq, model.SCIInfo{})
 			}
 			require.Equal(t, len(tt.want.Runs[0].Results), len(result.Runs[0].Results))
 			require.Equal(t, len(tt.want.Runs[0].Tool.Driver.Rules), len(result.Runs[0].Tool.Driver.Rules))
+			for index, wantResult := range tt.want.Runs[0].Results {
+				actualResult := result.Runs[0].Results[index]
+				require.Equal(t, wantResult.ResultProperties["tags"], actualResult.ResultProperties["tags"])
+				require.Equal(t, wantResult.PartialFingerprints.DatadogFingerprint, actualResult.PartialFingerprints.DatadogFingerprint)
+				require.Equal(t, wantResult.ResultMessage.Text, actualResult.ResultMessage.Text)
+			}
 			if len(tt.want.Runs[0].Tool.Driver.Rules) > 0 {
 				if len(result.Runs[0].Tool.Driver.Rules[0].Relationships) > 0 {
 					if tt.vq[0].CWE == "" {
@@ -340,6 +396,7 @@ func TestBuildSarifIssue(t *testing.T) {
 					}
 				}
 				require.Equal(t, tt.want.Runs[0].Results[0], result.Runs[0].Results[0])
+				require.Equal(t, tt.want.Runs[0].Tool.Driver.Rules[0].RuleFullDescription.Text, result.Runs[0].Tool.Driver.Rules[0].RuleFullDescription.Text)
 			}
 		})
 	}
