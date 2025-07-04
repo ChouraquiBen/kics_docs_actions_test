@@ -1,5 +1,7 @@
 name: Run Python Script and Create PR
-
+permissions:
+  contents: write
+  pull-requests: write
 on:
   push:
     branches:
