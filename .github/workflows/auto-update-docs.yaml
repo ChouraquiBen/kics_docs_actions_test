@@ -53,7 +53,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Send GitHub Action data to a Slack workflow
-        uses: slackapi/slack-github-action@d3dc61e5d1355f17c060df3210cda7044341866e
+        uses: slackapi/slack-github-action@f647c89261423b9045f1ecc4f887c2e62ff6f33d
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: webhook-trigger
