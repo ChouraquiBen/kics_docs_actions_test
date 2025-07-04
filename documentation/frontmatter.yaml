@@ -2,8 +2,8 @@ rules:
   terraform:
     aws:
       alb_deletion_protection_disabled:
-        description: ALB Deletion Protection Disableddddddddd
-        title: ALB Deletion Protection Disableddddddddd
+        description: ALB Deletion Protection Disabledddddddddddd
+        title: ALB Deletion Protection Disabledddddddddddd
       alb_is_not_integrated_with_waf:
         description: ALB Is Not Integrated With WAF
         title: ALB Is Not Integrated With WAF
