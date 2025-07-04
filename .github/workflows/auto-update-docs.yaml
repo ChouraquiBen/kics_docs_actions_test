@@ -23,12 +23,9 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-      - run: pip install yaml 
 
-      - name: pwd
-        run: |
-          ls
-          ls documentation
+      - name: Install Dependencies 
+        run: pip install PyYAML 
 
       - name: Checkout to new branch
         run: git checkout -b ${{ env.BRANCH_NAME }}
