@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@09d2acae674a48949e3602304ab46fd20ae0c42f
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@532b046aaf352bab5717122cc0ea52b7f12266a3
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -37,7 +37,7 @@ jobs:
         run: python documentation/local_gen.py assets/queries/ --resources-json "documentation/resources.json" --output-dir "documentation/rules" --list-json "documentation/list.json" --frontmatter-yaml "documentation/frontmatter.yaml"
 
       - name: Commit changesMore actions
-        uses: iarekylew00t/verified-bot-commit@v1
+        uses: iarekylew00t/verified-bot-commit@2ca4f450d4d5b29975688912ad83ea45c3b4dc52
         with:
           message: 'feat: Some changes'
           files: |
@@ -53,7 +53,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Send GitHub Action data to a Slack workflow
-        uses: slackapi/slack-github-action@v2.1.0
+        uses: slackapi/slack-github-action@d3dc61e5d1355f17c060df3210cda7044341866e
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: webhook-trigger
