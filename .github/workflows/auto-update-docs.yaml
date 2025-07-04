@@ -38,7 +38,7 @@ jobs:
       - name: Run Python script
         run: python documentation/local_gen.py assets/queries/ --resources-json "documentation/resources.json" --output-dir "documentation/rules" --list-json "documentation/list.json" --frontmatter-yaml "documentation/frontmatter.yaml"
 
-      - name: Commit changesMore actions
+      - name: Commit changes
         uses: iarekylew00t/verified-bot-commit@2a9d9e983e611793b54516a18e48361bbac691d9 #V1.4.1
         with:
           message: 'feat: Some changes'
