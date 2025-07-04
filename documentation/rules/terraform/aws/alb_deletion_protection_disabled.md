@@ -1,10 +1,10 @@
 ---
-title: "ALB Deletion Protection Disabledddddddd"
+title: "ALB Deletion Protection Disableddddddddd"
 group-id: "documentation/rules/terraform/aws"
 meta:
   name: "aws/alb_deletion_protection_disabled"
   id: "afecd1f1-6378-4f7e-bb3b-60c35801fdd4"
-  display_name: "ALB Deletion Protection Disabledddddddd"
+  display_name: "ALB Deletion Protection Disableddddddddd"
   cloud_provider: "aws"
   framework: "Terraform"
   severity: "MEDIUM"
